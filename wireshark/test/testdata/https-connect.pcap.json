@@ -53,6 +53,29 @@
     "_source": {
       "layers": {
         "frame.number": [
+          "8"
+        ],
+        "ja4.ja4l": [
+          "45_64_66"
+        ],
+        "ja4.ja4l_delta": [
+          "1.5"
+        ],
+        "ja4.ja4ls": [
+          "13532_57_31654"
+        ],
+        "ja4.ja4ls_delta": [
+          "2.3"
+        ]
+      }
+    }
+  },
+  {
+    "_index": "packets-2019-09-02",
+    "_score": null,
+    "_source": {
+      "layers": {
+        "frame.number": [
           "10"
         ],
         "ja4.ja4s_r": [

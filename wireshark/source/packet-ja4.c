@@ -19,10 +19,6 @@
 #define FIELD_VALUE_IS_PTR \
     ((WIRESHARK_VERSION_MAJOR > 4) || (WIRESHARK_VERSION_MAJOR == 4 && WIRESHARK_VERSION_MINOR > 1))
 
-#if FIELD_VALUE_IS_PTR
-#include <epan/ftypes/ftypes-int.h>
-#endif
-
 #ifndef array_length
 #define array_length(x) (sizeof(x) / sizeof(x)[0])
 #endif
@@ -215,6 +211,8 @@ typedef struct {
 
 typedef struct {
     int stream;
+    int client_port;
+    int server_port;
 
     // Used for ja4l
     nstime_t timestamp_A;
@@ -416,6 +414,16 @@ static int get_max_mode(wmem_allocator_t *scratch, wmem_map_t *hash_table) {
     return max_mode;
 }
 
+static inline bool packet_from_client(const conn_info_t *conn, int srcport, int dstport) {
+    return (conn->client_port > 0) && (conn->server_port > 0) && (srcport == conn->client_port) &&
+           (dstport == conn->server_port);
+}
+
+static inline bool packet_from_server(const conn_info_t *conn, int srcport, int dstport) {
+    return (conn->client_port > 0) && (conn->server_port > 0) && (srcport == conn->server_port) &&
+           (dstport == conn->client_port);
+}
+
 static conn_info_t *conn_lookup(char proto, int stream) {
     wmem_map_t *conn = NULL;
     if (proto == 'q') {
@@ -428,6 +436,8 @@ static conn_info_t *conn_lookup(char proto, int stream) {
     if (data == NULL) {
         data = wmem_new0(wmem_file_scope(), conn_info_t);
         data->stream = stream;
+        data->client_port = 0;
+        data->server_port = 0;
         data->pkts = 0;
         data->client_pkts = 0;
         data->server_pkts = 0;
@@ -1248,10 +1258,15 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
 
             if (strcmp(field->hfinfo->abbrev, "tcp.flags") == 0) {
                 conn_info_t *conn = conn_lookup(ja4_data.proto, stream);
+                uint32_t tcp_flags = fvalue_get_uinteger(get_value_ptr(field));
 
                 // SYN for this stream - signal JA4T
-                if (fvalue_get_uinteger(get_value_ptr(field)) == 0x02) {
+                if (tcp_flags == 0x02) {
                     syn = 1;
+                    if ((srcport > 0) && (dstport > 0)) {
+                        conn->client_port = srcport;
+                        conn->server_port = dstport;
+                    }
                     conn->client_ttl = curr_ttl;
                     if ((packet_time != NULL) && (nstime_is_zero(&conn->timestamp_A))) {
                         nstime_copy(&conn->timestamp_A, packet_time);
@@ -1259,8 +1274,13 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
                 }
 
                 // SYN ACK for JA4TS - server latency
-                if (fvalue_get_uinteger(get_value_ptr(field)) == 0x012) {
+                if (tcp_flags == 0x012) {
                     syn = 2;
+                    if ((srcport > 0) && (dstport > 0) && (conn->client_port == 0) &&
+                        (conn->server_port == 0)) {
+                        conn->client_port = dstport;
+                        conn->server_port = srcport;
+                    }
                     conn->server_ttl = curr_ttl;
                     if ((packet_time != NULL) && (nstime_is_zero(&conn->timestamp_B))) {
                         nstime_copy(&conn->timestamp_B, packet_time);
@@ -1271,13 +1291,13 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
                 }
 
                 // Add RST for JA4T
-                if ((packet_time != NULL) && (fvalue_get_uinteger(get_value_ptr(field)) == 0x004)) {
+                if ((packet_time != NULL) && (tcp_flags == 0x004)) {
                     syn = 3;
                     nstime_copy(&conn->rst_time, packet_time);
                 }
 
                 // ACK for JA4L-S - server latency
-                if ((fvalue_get_uinteger(get_value_ptr(field)) == 0x010) && (tcp_len == 0)) {
+                if ((tcp_flags == 0x010) && (tcp_len == 0)) {
                     if (dstport == 22) {
                         conn->tcp_client_acks++;
                     }
@@ -1292,13 +1312,17 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
                     }
                 }
 
-                // First packet after TCP handshake
-                // JA4L - Timestamps D, E, and F are application packets
-                // we identify them with PSH, ACK and the direction
-                if (fvalue_get_uinteger(get_value_ptr(field)) == 0x018) {
+                // JA4L - D, E, and F are application packets. Ignore bare ACKs and
+                // choose payload-bearing packets by the client/server roles learned
+                // from the TCP handshake.
+                if ((tcp_len > 0) && !nstime_is_zero(&conn->timestamp_C)) {
+                    bool from_client = packet_from_client(conn, srcport, dstport);
+                    bool from_server = packet_from_server(conn, srcport, dstport);
+
                     if (conn->server_ttl && conn->client_ttl) {
-                        if ((packet_time != NULL) && nstime_is_zero(&conn->timestamp_D)) {
-                            // Denotes first PSH, ACK
+                        if ((packet_time != NULL) && nstime_is_zero(&conn->timestamp_D) &&
+                            from_client) {
+                            // Denotes the first client application packet after the TCP handshake.
                             nstime_copy(&conn->timestamp_D, packet_time);
                         } else {
                             wmem_strbuf_t *display = wmem_strbuf_new(pinfo->pool, "");
@@ -1310,9 +1334,10 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
                                 is_http = true;
                             }
 
-                            if ((packet_time != NULL) && (srcport < 5000) &&
+                            if ((packet_time != NULL) && !nstime_is_zero(&conn->timestamp_D) &&
+                                from_server &&
                                 (nstime_is_zero(&conn->timestamp_E))) {
-                                // Denotes second PSH, ACK - JA4L-S goes here
+                                // Denotes the first server application packet after D.
                                 nstime_copy(&conn->timestamp_E, packet_time);
 
                                 if (is_http) {
@@ -1332,9 +1357,10 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
                                 }
                             }
 
-                            if ((packet_time != NULL) && (dstport < 5000) &&
+                            if ((packet_time != NULL) && !nstime_is_zero(&conn->timestamp_E) &&
+                                from_client &&
                                 (nstime_is_zero(&conn->timestamp_F))) {
-                                // Denotes third PSH, ACK - JA4L-C goes here
+                                // Denotes the first client application packet after E.
                                 nstime_copy(&conn->timestamp_F, packet_time);
 
                                 if (!is_http) {
@@ -1369,7 +1395,7 @@ static int dissect_ja4(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void
                 }
 
                 // Fix to add JA4SSH when a connection terminates
-                if ((fvalue_get_uinteger(get_value_ptr(field)) == 0x011) &&
+                if ((tcp_flags == 0x011) &&
                     ((srcport == 22) || (dstport == 22))) {
                     update_tree_item(pinfo->num, hf_ja4ssh, ja4ssh(pinfo->pool, conn), "tcp");
                     mark_complete(pinfo->num);
