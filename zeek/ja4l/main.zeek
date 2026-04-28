@@ -58,6 +58,8 @@ redef record FINGERPRINT::Info += {
 redef record Conn::Info += {
     ja4l: string &log &default = "";
     ja4ls: string &log &default = "";
+    ja4l_delta: string &log &default = "";
+    ja4ls_delta: string &log &default = "";
 };
 
 # Create the log stream and file
@@ -254,6 +256,23 @@ event QUIC::handshake_packet(c: connection, is_orig: bool, version: count, dcid:
 }
 
 event connection_state_remove(c: connection) {
-        c$conn$ja4l =  c$fp$ja4l$ja4l_c;
-        c$conn$ja4ls = c$fp$ja4l$ja4l_s;
+        if ( c?$fp && c$fp?$ja4l ) {
+            c$conn$ja4l =  c$fp$ja4l$ja4l_c;
+            c$conn$ja4ls = c$fp$ja4l$ja4l_s;
+
+            if ( c$fp$ja4l$server_handshake != 0 ) {
+                c$conn$ja4l_delta = "1.0";
+                c$conn$ja4ls_delta = "1.0";
+            } else if ( c$fp$ja4l$server_hello != 0 ) {
+                local client_denom = c$fp$ja4l$ack - c$fp$ja4l$synack;
+                if ( client_denom != 0 && c$fp$ja4l$first_client_data != 0 ) {
+                    c$conn$ja4l_delta = fmt("%.1f", (c$fp$ja4l$first_client_data - c$fp$ja4l$server_hello) / client_denom);
+                }
+
+                local server_denom = c$fp$ja4l$synack - c$fp$ja4l$syn;
+                if ( server_denom != 0 && c$fp$ja4l$client_hello != 0 ) {
+                    c$conn$ja4ls_delta = fmt("%.1f", (c$fp$ja4l$server_hello - c$fp$ja4l$client_hello) / server_denom);
+                }
+            }
+        }
 }
