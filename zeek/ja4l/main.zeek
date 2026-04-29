@@ -261,8 +261,8 @@ event connection_state_remove(c: connection) {
             c$conn$ja4ls = c$fp$ja4l$ja4l_s;
 
             if ( c$fp$ja4l$server_handshake != 0 ) {
-                c$conn$ja4l_delta = "1.0";
-                c$conn$ja4ls_delta = "1.0";
+                c$conn$ja4l_delta = "";
+                c$conn$ja4ls_delta = "";
             } else if ( c$fp$ja4l$server_hello != 0 ) {
                 local client_denom = c$fp$ja4l$ack - c$fp$ja4l$synack;
                 if ( client_denom != 0 && c$fp$ja4l$first_client_data != 0 ) {
