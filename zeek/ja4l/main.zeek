@@ -29,7 +29,7 @@ export {
     ack: double &default = 0;  # C
     client_hello: double &default=0; # D  
     server_hello: double &default=0; # E
-    first_client_data: double &default=0; # F    
+    first_client_data: double &default=0; # F
 
     # Timestamps for QUIC
     client_init: double &default = 0;
