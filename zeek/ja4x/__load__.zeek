@@ -1,1 +1,2 @@
-# empty
+@load ../utils/common
+@load ./main
